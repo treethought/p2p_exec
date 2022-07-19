@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use core::str::FromStr;
 use async_std::{io, task};
 use futures::{
     prelude::{stream::StreamExt, *},
@@ -11,6 +12,11 @@ use libp2p::{
     swarm::SwarmEvent,
     Multiaddr, NetworkBehaviour, PeerId, Swarm,
 };
+use std::collections::HashMap;
+
+
+pub const TOPIC: &str = "exec";
+// pub var TOPIC: floodsub::Topic = floodsub::Topic::new("exec");
 
 // use crate::error::NodeError;
 
@@ -53,7 +59,7 @@ pub struct Node {
     behaviour: MyBehaviour,
     swarm: Swarm<MyBehaviour>,
     pub id: PeerId,
-    pub topics: Vec<floodsub::Topic>,
+    pub topics: HashMap<String, floodsub::Topic>,
 }
 
 impl Node {
@@ -76,19 +82,21 @@ impl Node {
 
         let swarm = {
             let mdns = task::block_on(Mdns::new(MdnsConfig::default()))?;
-            let behaviour = MyBehaviour {
+            let mut behaviour = MyBehaviour {
                 floodsub: Floodsub::new(local_peer_id),
                 mdns,
                 ignored_member: false,
             };
+            let topic = floodsub::Topic::new(TOPIC);
 
+            behaviour.floodsub.subscribe(topic.clone());
             Swarm::new(transport, behaviour, local_peer_id)
         };
 
         let n = Self {
             key: local_key,
             id: local_peer_id,
-            topics: Vec::new(),
+            topics: HashMap::new(),
             behaviour: behaviour,
             swarm: swarm,
         };
@@ -102,9 +110,8 @@ impl Node {
 
     pub fn publish(&mut self, topic: &str, msg: impl Into<Vec<u8>>) {
         let t = floodsub::Topic::new(topic);
-        self.behaviour.floodsub.publish_any(t, msg)
+        self.swarm.behaviour_mut().floodsub.publish_any(t.clone(), msg)
     }
-
 
     pub fn dial_peer(&mut self, addr: Multiaddr) -> Result<()> {
         println!("dialing {:?}", &addr);
@@ -119,14 +126,48 @@ impl Node {
         }
     }
 
-    async fn event_loop(&mut self) -> Result<()> {
+    async fn handle_input(&mut self, input: String) -> Result<()> {
+        let split: Vec<&str> = input.split(" ").collect();
+        println!("{:?}", split);
+
+        let raw_op = split.first().ok_or(crate::error::NodeError::InvalidExecFunction)?;
+
+        let exec_op = match crate::event::ExecFunction::from_str(raw_op) {
+            Ok(op) => op,
+            Err(e) => return Err(anyhow!(crate::error::NodeError::InvalidExecFunction))
+        };
+
+        if split.len() < 2 {
+            return Err(anyhow!("invalid number of args"));
+        }
+
+        let x = split[1].parse::<u64>()?;
+        let y = split[2].parse::<u64>()?;
+
+        let msg = crate::event::ExecRequest{function: exec_op, args: (x, y)};
+
+        println!("publishing op: {:?}", msg);
+        let serialized = serde_json::to_string(&msg).unwrap();
+
+        self.publish(TOPIC, serialized.as_bytes());
+        println!("published!");
+
+        Ok(())
+    }
+    pub async fn event_loop(&mut self) -> Result<()> {
         // Kick it off
+        //
+        // Read full lines from stdin
+        let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
+
+        // let t = floodsub::Topic::new(TOPIC);
         loop {
             select! {
-                // line = stdin.select_next_some() => self.swarm
-                //     .behaviour_mut()
-                //     .floodsub
-                //     .publish(floodsub_topic.clone(), line.expect("Stdin not to close").as_bytes()),
+                line = stdin.select_next_some() => {
+                    if let Ok(c) = line {
+                        self.handle_input(c).await?
+                    }
+                },
 
                 event = self.swarm.select_next_some() => match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
@@ -145,6 +186,11 @@ impl Node {
                         MdnsEvent::Discovered(list)
                     )) => {
                         for (peer, _) in list {
+                            // if !self.swarm.behaviour_mut().mdns.has_node(&peer) {
+                            //     println!("peer already discovered: {:?}", &peer);
+                            //     continue
+                            // }
+                            println!("discovered peer: {:?}", peer);
                             self.swarm
                                 .behaviour_mut()
                                 .floodsub
@@ -155,7 +201,8 @@ impl Node {
                         list
                     ))) => {
                         for (peer, _) in list {
-                            if !self.swarm.behaviour_mut().mdns.has_node(&peer) {
+                            if self.swarm.behaviour_mut().mdns.has_node(&peer) {
+                                println!("peer connection has expired: {:?}", peer);
                                 self.swarm
                                     .behaviour_mut()
                                     .floodsub
@@ -170,9 +217,6 @@ impl Node {
     }
 
     pub async fn listen(&mut self) -> Result<()> {
-        // Read full lines from stdin
-        // let mut stdin = io::BufReader::new(io::stdin()).lines().as_bytes();
-
         // Listen on all interfaces and whatever port the OS assigns
         let listen_id = self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         println!("listener id: {:?}", listen_id);
