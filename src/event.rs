@@ -3,6 +3,14 @@ use serde::{Serialize, Deserialize};
 // use anyhow::{anyhow, Result};
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ExecEvent {
+    // RegisterEvent,
+    Request(ExecRequest),
+    Response(ExecResponse),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ExecFunction {
     Add,
     Subtract,
@@ -10,11 +18,7 @@ pub enum ExecFunction {
     Multiply,
 }
 
-enum ExecEvent {
-    RegisterEvent,
-    ExecRequest,
-    ExecResponse,
-}
+
 
 struct RegisterEvent {
     topic: String,
@@ -28,8 +32,9 @@ pub struct ExecRequest {
     pub args: (u64, u64),
 }
 
-struct ExecResponse {
-    result: u64,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecResponse {
+    pub result: u64,
 }
 
 impl FromStr for ExecFunction {

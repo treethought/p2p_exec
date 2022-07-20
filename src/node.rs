@@ -14,6 +14,8 @@ use libp2p::{
 };
 use std::collections::HashMap;
 
+use crate::event;
+
 
 pub const TOPIC: &str = "exec";
 // pub var TOPIC: floodsub::Topic = floodsub::Topic::new("exec");
@@ -126,6 +128,17 @@ impl Node {
         }
     }
 
+    async fn exec_req(&mut self, msg: event::ExecRequest) -> Result<event::ExecResponse> {
+        let val = match msg.function {
+            event::ExecFunction::Add => (msg.args.0 + msg.args.1),
+            event::ExecFunction::Subtract => (msg.args.0 - msg.args.1),
+            event::ExecFunction::Multiply => (msg.args.0 * msg.args.1),
+            event::ExecFunction::Divide => (msg.args.0 / msg.args.1),
+        };
+
+        Ok(event::ExecResponse{result: val})
+    }
+
     async fn handle_input(&mut self, input: String) -> Result<()> {
         let split: Vec<&str> = input.split(" ").collect();
         println!("{:?}", split);
@@ -144,10 +157,11 @@ impl Node {
         let x = split[1].parse::<u64>()?;
         let y = split[2].parse::<u64>()?;
 
-        let msg = crate::event::ExecRequest{function: exec_op, args: (x, y)};
+        let req = event::ExecRequest{function: exec_op, args: (x, y)};
+        let msg = event::ExecEvent::Request(req);
 
-        println!("publishing op: {:?}", msg);
         let serialized = serde_json::to_string(&msg).unwrap();
+        println!("publishing op: {:?}", serialized);
 
         self.publish(TOPIC, serialized.as_bytes());
         println!("published!");
@@ -181,6 +195,35 @@ impl Node {
                             String::from_utf8_lossy(&message.data),
                             message.source
                         );
+
+                        let ev: event::ExecEvent = serde_json::from_slice::<event::ExecEvent>(&message.data)?;
+
+                        println!("{:?}", ev);
+
+                        match ev {
+                            event::ExecEvent::Request(req) => {
+                                println!("received op to execute");
+                                let response = self.exec_req(req).await?;
+                                let event = event::ExecEvent::Response(response);
+                                let serialized = serde_json::to_string(&event)?;
+                                self.publish(TOPIC, serialized.as_bytes());
+
+                            },
+                            event::ExecEvent::Response(resp) => {
+                                println!("received result: {:?}", resp);
+                            }
+                        }
+
+
+
+
+
+                        // let req: event::ExecRequest = serde_json::from_slice(&message.data)?;
+                        // let resp = self.exec_req(req).await?;
+
+                        // let serialized = serde_json::to_string(&resp).unwrap();
+                        // self.publish(TOPIC, serialized.as_bytes());
+
                     }
                     SwarmEvent::Behaviour(OutEvent::Mdns(
                         MdnsEvent::Discovered(list)
