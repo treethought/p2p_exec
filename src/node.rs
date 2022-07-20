@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use core::str::FromStr;
 use async_std::{io, task};
+use core::str::FromStr;
 use futures::{
     prelude::{stream::StreamExt, *},
     select,
@@ -16,11 +16,7 @@ use std::collections::HashMap;
 
 use crate::event;
 
-
 pub const TOPIC: &str = "exec";
-// pub var TOPIC: floodsub::Topic = floodsub::Topic::new("exec");
-
-// use crate::error::NodeError;
 
 // We create a custom network behaviour that combines floodsub and mDNS.
 // In the future, we want to improve libp2p to make this easier to do.
@@ -112,7 +108,10 @@ impl Node {
 
     pub fn publish(&mut self, topic: &str, msg: impl Into<Vec<u8>>) {
         let t = floodsub::Topic::new(topic);
-        self.swarm.behaviour_mut().floodsub.publish_any(t.clone(), msg)
+        self.swarm
+            .behaviour_mut()
+            .floodsub
+            .publish_any(t.clone(), msg)
     }
 
     pub fn dial_peer(&mut self, addr: Multiaddr) -> Result<()> {
@@ -136,18 +135,19 @@ impl Node {
             event::ExecFunction::Divide => (msg.args.0 / msg.args.1),
         };
 
-        Ok(event::ExecResponse{result: val})
+        Ok(event::ExecResponse { result: val })
     }
 
     async fn handle_input(&mut self, input: String) -> Result<()> {
         let split: Vec<&str> = input.split(" ").collect();
-        println!("{:?}", split);
 
-        let raw_op = split.first().ok_or(crate::error::NodeError::InvalidExecFunction)?;
+        let raw_op = split
+            .first()
+            .ok_or(crate::error::NodeError::InvalidExecFunction)?;
 
         let exec_op = match crate::event::ExecFunction::from_str(raw_op) {
             Ok(op) => op,
-            Err(e) => return Err(anyhow!(crate::error::NodeError::InvalidExecFunction))
+            Err(e) => return Err(anyhow!(crate::error::NodeError::InvalidExecFunction)),
         };
 
         if split.len() < 2 {
@@ -157,26 +157,30 @@ impl Node {
         let x = split[1].parse::<u64>()?;
         let y = split[2].parse::<u64>()?;
 
-        let req = event::ExecRequest{function: exec_op, args: (x, y)};
+        let req = event::ExecRequest {
+            function: exec_op,
+            args: (x, y),
+        };
         let msg = event::ExecEvent::Request(req);
 
+        println!("publishing op: {:?}", msg);
+
         let serialized = serde_json::to_string(&msg).unwrap();
-        println!("publishing op: {:?}", serialized);
 
         self.publish(TOPIC, serialized.as_bytes());
-        println!("published!");
 
         Ok(())
     }
-    pub async fn event_loop(&mut self) -> Result<()> {
-        // Kick it off
+    pub async fn start(&mut self) -> Result<()> {
+        // kick off the event loop
         //
         // Read full lines from stdin
         let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
 
-        // let t = floodsub::Topic::new(TOPIC);
         loop {
             select! {
+                // handle ops from stdnin
+                // parse the operation and publish to peers
                 line = stdin.select_next_some() => {
                     if let Ok(c) = line {
                         self.handle_input(c).await?
@@ -187,22 +191,19 @@ impl Node {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         println!("Listening on {:?}", address);
                     }
+                    // handle op requests from peers
                     SwarmEvent::Behaviour(OutEvent::Floodsub(
                         FloodsubEvent::Message(message)
                     )) => {
-                        println!(
-                            "Received: '{:?}' from {:?}",
-                            String::from_utf8_lossy(&message.data),
-                            message.source
-                        );
-
+                        // deserialize json into one of ExecEvent variants
                         let ev: event::ExecEvent = serde_json::from_slice::<event::ExecEvent>(&message.data)?;
 
-                        println!("{:?}", ev);
+                        println!("{:?} from {:?}", ev, message.source);
 
                         match ev {
+                            // received request, execute the operation
+                            // and publish the result
                             event::ExecEvent::Request(req) => {
-                                println!("received op to execute");
                                 let response = self.exec_req(req).await?;
                                 let event = event::ExecEvent::Response(response);
                                 let serialized = serde_json::to_string(&event)?;
@@ -210,29 +211,14 @@ impl Node {
 
                             },
                             event::ExecEvent::Response(resp) => {
-                                println!("received result: {:?}", resp);
+                                println!("received result: {:?}", resp.result);
                             }
                         }
-
-
-
-
-
-                        // let req: event::ExecRequest = serde_json::from_slice(&message.data)?;
-                        // let resp = self.exec_req(req).await?;
-
-                        // let serialized = serde_json::to_string(&resp).unwrap();
-                        // self.publish(TOPIC, serialized.as_bytes());
-
                     }
                     SwarmEvent::Behaviour(OutEvent::Mdns(
                         MdnsEvent::Discovered(list)
                     )) => {
                         for (peer, _) in list {
-                            // if !self.swarm.behaviour_mut().mdns.has_node(&peer) {
-                            //     println!("peer already discovered: {:?}", &peer);
-                            //     continue
-                            // }
                             println!("discovered peer: {:?}", peer);
                             self.swarm
                                 .behaviour_mut()
@@ -244,7 +230,7 @@ impl Node {
                         list
                     ))) => {
                         for (peer, _) in list {
-                            if self.swarm.behaviour_mut().mdns.has_node(&peer) {
+                            if !self.swarm.behaviour_mut().mdns.has_node(&peer) {
                                 println!("peer connection has expired: {:?}", peer);
                                 self.swarm
                                     .behaviour_mut()

@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
     let mut node: node::Node = node::Node::new().await?;
     node.listen().await?;
     // node.subscribe(node::TOPIC);
-    let e = node.event_loop().await;
+    let e = node.start().await;
     if let Err(err) = e {
         println!("{}", err);
         return Err(err)
